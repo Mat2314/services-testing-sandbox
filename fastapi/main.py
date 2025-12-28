@@ -1,11 +1,39 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request, Response
 from sqlmodel import SQLModel, create_engine, Session, select
 from typing import List
-import os
-from datetime import date
-from contextlib import asynccontextmanager
+import os, time
+
+from prometheus_client import (
+    Counter,
+    Histogram,
+    Gauge,
+    generate_latest,
+    CONTENT_TYPE_LATEST,
+)
 
 from models import Author, Book, Comment
+
+# ----------------------
+# Metrics definitions
+# ----------------------
+
+REQUEST_COUNT = Counter(
+    "http_requests_total",
+    "Total HTTP requests",
+    ["method", "path", "status"],
+)
+
+REQUEST_LATENCY = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request latency",
+    ["method", "path"],
+)
+
+IN_PROGRESS = Gauge(
+    "http_requests_in_progress",
+    "In-progress HTTP requests",
+)
+
 
 # Database setup
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/mydb")
@@ -19,6 +47,59 @@ app = FastAPI(
     title="Library API", 
     description="API for managing authors, books, and comments",
 )
+
+# ----------------------
+# Middleware
+# ----------------------
+
+@app.middleware("http")
+async def prometheus_middleware(request: Request, call_next):
+    # 1️⃣ Skip metrics endpoint (avoid self-scraping)
+    if request.url.path == "/metrics":
+        return await call_next(request)
+
+    method = request.method
+
+    IN_PROGRESS.inc()
+    start_time = time.time()
+
+    try:
+        # 2️⃣ Execute request FIRST (route is resolved here)
+        response = await call_next(request)
+        status = response.status_code
+        return response
+
+    finally:
+        duration = time.time() - start_time
+        IN_PROGRESS.dec()
+
+        # 3️⃣ Get normalized route path AFTER call_next
+        route = request.scope.get("route")
+        path = route.path if route else "unknown"
+
+        # 4️⃣ Record metrics
+        REQUEST_COUNT.labels(
+            method=method,
+            path=path,
+            status=status,
+        ).inc()
+
+        REQUEST_LATENCY.labels(
+            method=method,
+            path=path,
+        ).observe(duration)
+
+# ----------------------
+# Metrics endpoint
+# ----------------------
+
+@app.get("/metrics")
+def metrics():
+    return Response(
+        generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
+
 
 @app.get("/")
 async def root():
