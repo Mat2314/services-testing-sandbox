@@ -14,8 +14,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       # - ./init-scripts:/docker-entrypoint-initdb.d
-    # networks:
-    #   - app_network
+    networks:
+      - app_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 30s
@@ -23,10 +23,33 @@ services:
       retries: 3
       start_period: 60s
 
+  fastapi:
+    build:
+      context: ./fastapi
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/mydb
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./fastapi:/app
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
 volumes:
   postgres_data:
     driver: local
 
-# networks:
-#   app_network:
-#     driver: bridge
+networks:
+  app_network:
+    driver: bridge
